@@ -1,0 +1,1882 @@
+diff --git a/src/client/CMakeLists.txt b/src/client/CMakeLists.txt
+index b4da4db..f38329e 100644
+--- a/src/client/CMakeLists.txt
++++ b/src/client/CMakeLists.txt
+@@ -61,6 +61,7 @@ file(GLOB_RECURSE SOURCES
+     "IO/*.cpp" "IO/*.c"
+     "LazyFS/*.cpp" "LazyFS/*.c"
+     "Net/*.cpp" "Net/*.c"
++    "Offline/*.cpp"
+     "Template/*.cpp" "Template/*.c"
+     "Util/*.cpp" "Util/*.c"
+ )
+diff --git a/src/client/Character/CharStats.cpp b/src/client/Character/CharStats.cpp
+index 0d1c421..6eb41ec 100644
+--- a/src/client/Character/CharStats.cpp
++++ b/src/client/Character/CharStats.cpp
+@@ -220,10 +220,22 @@ namespace jrc
+         job.change_job(id);
+     }
+ 
++    void CharStats::set_damage_override(int32_t damage)
++    {
++        damage_override = damage;
++    }
++
+     int32_t CharStats::calculate_damage(int32_t mobatk) const
+     {
++        if (damage_override > 0)
++        {
++            return damage_override;
++        }
+         // random stuff, need to find the actual formula somewhere
+-        int32_t reduceatk = mobatk / 2 + mobatk / get_total(Equipstat::WDEF);
++        // A character with no armour has 0 weapon defence; treat that as no
++        // reduction instead of dividing by zero.
++        int32_t wdef = get_total(Equipstat::WDEF);
++        int32_t reduceatk = mobatk / 2 + (wdef > 0 ? mobatk / wdef : mobatk);
+         return reduceatk - static_cast<int32_t>(reduceatk * reducedamage);
+     }
+ 
+diff --git a/src/client/Character/CharStats.h b/src/client/Character/CharStats.h
+index be721e1..837a5aa 100644
+--- a/src/client/Character/CharStats.h
++++ b/src/client/Character/CharStats.h
+@@ -47,6 +47,9 @@ namespace jrc
+         void set_mastery(float mastery);
+         void set_damagepercent(float damagepercent);
+         void set_reducedamage(float reducedamage);
++        // When > 0 every hit deals exactly this much (offline mode: a character
++        // whose defence makes everything a "1"). 0 restores the normal formula.
++        void set_damage_override(int32_t damage);
+ 
+         void change_job(uint16_t id);
+ 
+@@ -115,5 +118,6 @@ namespace jrc
+         float stance;
+         float resiststatus;
+         float reducedamage;
++        int32_t damage_override = 0;
+     };
+ }
+diff --git a/src/client/Configuration.cpp b/src/client/Configuration.cpp
+index a1bb712..d8feb76 100644
+--- a/src/client/Configuration.cpp
++++ b/src/client/Configuration.cpp
+@@ -47,13 +47,27 @@ namespace jrc
+         settings.emplace<MiniMapType>();
+         settings.emplace<MiniMapSimpleMode>();
+         settings.emplace<MiniMapDefaultHelpers>();
++        settings.emplace<OfflineMapId>();
++        settings.emplace<OfflinePortal>();
++        settings.emplace<OfflineReplay>();
++        settings.emplace<OfflineDeathY>();
++        settings.emplace<OfflineTrace>();
++        settings.emplace<OfflineHp>();
++        settings.emplace<OfflineDamagePerHit>();
++        settings.emplace<OfflineLavaLethal>();
++        settings.emplace<OfflineGoal>();
++        settings.emplace<OfflineHiddenPortals>();
+ 
+         load();
+     }
+ 
+     Configuration::~Configuration()
+     {
++        // The headless harness never wants a Settings file (it would land in
++        // the assets directory, or wherever an error exit happened).
++#ifndef MS_HEADLESS
+         save();
++#endif
+     }
+ 
+     void Configuration::load()
+diff --git a/src/client/Configuration.h b/src/client/Configuration.h
+index e486d8d..616a835 100644
+--- a/src/client/Configuration.h
++++ b/src/client/Configuration.h
+@@ -304,6 +304,73 @@ namespace jrc
+         MiniMapDefaultHelpers() : BoolEntry("MiniMapDefaultHelpers", "false") {}
+     };
+ 
++    // Offline mode. When OfflineMapId is set the client never connects to a
++    // server: it spawns a synthetic character on that map and, if
++    // OfflineReplay holds base64 input bytes, plays them back.
++    struct OfflineMapId : public Configuration::StringEntry
++    {
++        OfflineMapId() : StringEntry("OfflineMapId", "") {}
++    };
++
++    struct OfflinePortal : public Configuration::StringEntry
++    {
++        OfflinePortal() : StringEntry("OfflinePortal", "0") {}
++    };
++
++    struct OfflineReplay : public Configuration::StringEntry
++    {
++        OfflineReplay() : StringEntry("OfflineReplay", "") {}
++    };
++
++    // Replay stop rule: when set, a replay ends as soon as the player's y
++    // exceeds this value (falling into the lava on the Zakum maps: -130).
++    struct OfflineDeathY : public Configuration::StringEntry
++    {
++        OfflineDeathY() : StringEntry("OfflineDeathY", "") {}
++    };
++
++    // When "1", print player/mob positions every tick (to compare a browser
++    // replay against the harness trace).
++    struct OfflineTrace : public Configuration::StringEntry
++    {
++        OfflineTrace() : StringEntry("OfflineTrace", "") {}
++    };
++
++    // Offline character: hit points, and the fixed damage every hit deals
++    // (mob touch, falling rock, steam vent, lava area). Death at 0 HP.
++    struct OfflineHp : public Configuration::StringEntry
++    {
++        OfflineHp() : StringEntry("OfflineHp", "100") {}
++    };
++
++    struct OfflineDamagePerHit : public Configuration::StringEntry
++    {
++        OfflineDamagePerHit() : StringEntry("OfflineDamagePerHit", "1") {}
++    };
++
++    // "1": the lava trap areas kill outright regardless of HP (falling into the
++    // lava is the jump quest's failure condition; with HP and the client's
++    // knock-back, wading along the bottom reaches the exit platform otherwise).
++    struct OfflineLavaLethal : public Configuration::StringEntry
++    {
++        OfflineLavaLethal() : StringEntry("OfflineLavaLethal", "1") {}
++    };
++
++    // What counts as solving the map offline: "" (any warp portal to another
++    // map), "portal:<name>", or "npc:<id>" (stand next to that NPC, e.g. the
++    // quest NPC at the end of a jump quest stage).
++    struct OfflineGoal : public Configuration::StringEntry
++    {
++        OfflineGoal() : StringEntry("OfflineGoal", "") {}
++    };
++
++    // Invisible portals without a target ("hidden" trap portals): "reset" sends
++    // the player back to the spawn when used, "ignore" does nothing.
++    struct OfflineHiddenPortals : public Configuration::StringEntry
++    {
++        OfflineHiddenPortals() : StringEntry("OfflineHiddenPortals", "reset") {}
++    };
++
+     // Can be used to access settings.
+     template <typename T>
+     struct Setting
+diff --git a/src/client/Gameplay/MapleMap/MapInfo.h b/src/client/Gameplay/MapleMap/MapInfo.h
+index 46602fb..d612a5d 100644
+--- a/src/client/Gameplay/MapleMap/MapInfo.h
++++ b/src/client/Gameplay/MapleMap/MapInfo.h
+@@ -48,6 +48,8 @@ namespace jrc
+         bool inrange(Point<int16_t> position, bool upwards) const;
+         bool felloff(int16_t y, bool downwards) const;
+         int16_t get_x() const;
++        int16_t get_y1() const { return y1; }
++        int16_t get_y2() const { return y2; }
+ 
+     private:
+         int16_t x;
+@@ -72,6 +74,7 @@ namespace jrc
+         Optional<const Seat> findseat(Point<int16_t> position) const;
+         // Find a ladder at the player's position. upwards = false implies downwards.
+         Optional<const Ladder> findladder(Point<int16_t> position, bool upwards) const;
++        const std::vector<Ladder>& get_ladders() const { return ladders; }
+ 
+     private:
+         int32_t fieldlimit;
+diff --git a/src/client/Gameplay/MapleMap/MapObjects.h b/src/client/Gameplay/MapleMap/MapObjects.h
+index 5a35a6b..d2a92fe 100644
+--- a/src/client/Gameplay/MapleMap/MapObjects.h
++++ b/src/client/Gameplay/MapleMap/MapObjects.h
+@@ -22,6 +22,7 @@
+ #include "../../Template/Optional.h"
+ 
+ #include <array>
++#include <map>
+ #include <memory>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -51,7 +52,11 @@ namespace jrc
+         // Obtains a const pointer to the mapobject with the given oid.
+         Optional<const MapObject> get(int32_t oid) const;
+ 
+-        using underlying_t = typename std::unordered_map<int32_t, std::unique_ptr<MapObject>>;
++        // Ordered by oid on purpose: objects are updated in iteration order and
++        // mob AI draws from a shared random generator, so an implementation-
++        // defined (unordered) order would make mob behaviour differ between
++        // standard libraries, and offline replays must agree across builds.
++        using underlying_t = typename std::map<int32_t, std::unique_ptr<MapObject>>;
+         // Return a begin iterator.
+         underlying_t::iterator begin();
+         // Return an end iterator.
+@@ -63,7 +68,7 @@ namespace jrc
+         size_t size() const;
+ 
+     private:
+-        std::unordered_map<int32_t, std::unique_ptr<MapObject>> objects;
++        underlying_t objects;
+         std::array<std::unordered_set<int32_t>, Layer::LENGTH> layers;
+     };
+ }
+diff --git a/src/client/Gameplay/MapleMap/MapPortals.cpp b/src/client/Gameplay/MapleMap/MapPortals.cpp
+index 6763974..dfcb029 100644
+--- a/src/client/Gameplay/MapleMap/MapPortals.cpp
++++ b/src/client/Gameplay/MapleMap/MapPortals.cpp
+@@ -149,6 +149,32 @@ namespace jrc
+     }
+ 
+ 
++    Portal::WarpInfo MapPortals::find_touch_warp_at(Point<int16_t> playerpos)
++    {
++        if (cooldown != 0)
++        {
++            return {};
++        }
++
++        for (const auto& iter : portals_by_id)
++        {
++            const Portal& portal = iter.second;
++            Portal::Type type = portal.get_type();
++            bool touch = type == Portal::TOUCH || type == Portal::SCRIPTED_TOUCH;
++            if (touch && portal.bounds().contains(playerpos))
++            {
++                cooldown = WARPCD;
++                return portal.getwarpinfo();
++            }
++        }
++        return {};
++    }
++
++    const std::unordered_map<uint8_t, Portal>& MapPortals::get_portals() const
++    {
++        return portals_by_id;
++    }
++
+     void MapPortals::init()
+     {
+         nl::node src = nl::nx::map["MapHelper.img"]["portal"]["game"];
+diff --git a/src/client/Gameplay/MapleMap/MapPortals.h b/src/client/Gameplay/MapleMap/MapPortals.h
+index 8002651..cbac280 100644
+--- a/src/client/Gameplay/MapleMap/MapPortals.h
++++ b/src/client/Gameplay/MapleMap/MapPortals.h
+@@ -40,6 +40,11 @@ namespace jrc
+         void draw(Point<int16_t> viewpos, float inter) const;
+ 
+         Portal::WarpInfo find_warp_at(Point<int16_t> playerpos);
++        // Like find_warp_at but only for portals that trigger on contact.
++        // Does not touch the cooldown unless a portal is actually taken, so
++        // calling it every tick cannot starve UP-key portal use.
++        Portal::WarpInfo find_touch_warp_at(Point<int16_t> playerpos);
++        const std::unordered_map<uint8_t, Portal>& get_portals() const;
+ 
+         Point<int16_t> get_portal_by_id(uint8_t id) const;
+         Point<int16_t> get_portal_by_name(const std::string& name) const;
+diff --git a/src/client/Gameplay/MapleMap/MapTilesObjs.cpp b/src/client/Gameplay/MapleMap/MapTilesObjs.cpp
+index 284ce0d..5458b3e 100644
+--- a/src/client/Gameplay/MapleMap/MapTilesObjs.cpp
++++ b/src/client/Gameplay/MapleMap/MapTilesObjs.cpp
+@@ -49,10 +49,55 @@ namespace jrc
+     {
+         for (auto& iter : objs)
+         {
++#ifdef MS_HEADLESS
++            // The headless fuzzing build only animates objects that matter for
++            // gameplay: traps, whose hit boxes depend on the current frame.
++            if (!iter.second.is_trap())
++            {
++                continue;
++            }
++#endif
+             iter.second.update();
+         }
+     }
+ 
++    TrapHit TilesObjs::find_trap(const Rectangle<int16_t>& rect) const
++    {
++        for (const auto& iter : objs)
++        {
++            const Obj& obj = iter.second;
++            if (!obj.is_trap())
++            {
++                continue;
++            }
++            Rectangle<int16_t> box = obj.get_hitbox();
++            if (box.width() == 0 && box.height() == 0)
++            {
++                continue;
++            }
++            if (box.overlaps(rect))
++            {
++                TrapHit hit;
++                hit.damage = obj.get_damage();
++                hit.origin = obj.get_position();
++                hit.obj = &obj;
++                return hit;
++            }
++        }
++        return {};
++    }
++
++    void TilesObjs::collect_traps(std::vector<const Obj*>& out) const
++    {
++        for (const auto& iter : objs)
++        {
++            if (iter.second.is_trap())
++            {
++                out.push_back(&iter.second);
++            }
++        }
++    }
++
+     void TilesObjs::draw(Point<int16_t> viewpos, float alpha) const
+     {
+         for (auto& iter : objs)
+@@ -90,4 +135,26 @@ namespace jrc
+             iter.second.update();
+         }
+     }
++
++    TrapHit MapTilesObjs::find_trap(const Rectangle<int16_t>& rect) const
++    {
++        for (auto iter : layers)
++        {
++            if (TrapHit hit = iter.second.find_trap(rect))
++            {
++                return hit;
++            }
++        }
++        return {};
++    }
++
++    std::vector<const Obj*> MapTilesObjs::get_traps() const
++    {
++        std::vector<const Obj*> traps;
++        for (auto iter : layers)
++        {
++            iter.second.collect_traps(traps);
++        }
++        return traps;
++    }
+ }
+diff --git a/src/client/Gameplay/MapleMap/MapTilesObjs.h b/src/client/Gameplay/MapleMap/MapTilesObjs.h
+index dc0135a..0fd1e10 100644
+--- a/src/client/Gameplay/MapleMap/MapTilesObjs.h
++++ b/src/client/Gameplay/MapleMap/MapTilesObjs.h
+@@ -27,6 +27,18 @@
+ 
+ namespace jrc
+ {
++    struct TrapHit
++    {
++        int32_t damage = 0;
++        Point<int16_t> origin;
++        const Obj* obj = nullptr;
++
++        explicit operator bool() const
++        {
++            return damage > 0;
++        }
++    };
++
+     // A tile and obj layer.
+     class TilesObjs
+     {
+@@ -36,6 +48,9 @@ namespace jrc
+ 
+         void draw(Point<int16_t> viewpos, float alpha) const;
+         void update();
++        // First damage trap whose current hit box overlaps the rectangle.
++        TrapHit find_trap(const Rectangle<int16_t>& rect) const;
++        void collect_traps(std::vector<const Obj*>& out) const;
+ 
+     private:
+         std::multimap<uint8_t, Tile> tiles;
+@@ -52,6 +67,8 @@ namespace jrc
+ 
+         void draw(Layer::Id layer, Point<int16_t> viewpos, float alpha) const;
+         void update();
++        TrapHit find_trap(const Rectangle<int16_t>& rect) const;
++        std::vector<const Obj*> get_traps() const;
+ 
+     private:
+         EnumMap<Layer::Id, TilesObjs> layers;
+diff --git a/src/client/Gameplay/MapleMap/Mob.cpp b/src/client/Gameplay/MapleMap/Mob.cpp
+index 1e7e5a1..88dbd81 100644
+--- a/src/client/Gameplay/MapleMap/Mob.cpp
++++ b/src/client/Gameplay/MapleMap/Mob.cpp
+@@ -212,6 +212,7 @@ namespace jrc
+         phobj.fhid = fh;
+         phobj.set_flag(PhysicsObject::TURNATEDGES);
+ 
++        haspatrol    = false;
+         hppercent    = 0;
+         dying        = false;
+         dead         = false;
+@@ -356,6 +357,19 @@ namespace jrc
+                 }
+                 else
+                 {
++                    if (control && haspatrol)
++                    {
++                        // Turn around at the spawn range like the server does.
++                        int16_t x = phobj.get_x();
++                        if (flip && x >= patrol.greater())
++                        {
++                            flip = false;
++                        }
++                        else if (!flip && x <= patrol.smaller())
++                        {
++                            flip = true;
++                        }
++                    }
+                     phobj.hforce = flip ? speed : -speed;
+                 }
+                 break;
+@@ -502,6 +516,12 @@ namespace jrc
+         effects.drawabove(absp, alpha);
+     }
+ 
++    void Mob::set_patrol_range(Range<int16_t> range)
++    {
++        haspatrol = true;
++        patrol = range;
++    }
++
+     void Mob::set_control(int8_t mode)
+     {
+         control = mode > 0;
+diff --git a/src/client/Gameplay/MapleMap/Mob.h b/src/client/Gameplay/MapleMap/Mob.h
+index eb6edaa..af6fcc9 100644
+--- a/src/client/Gameplay/MapleMap/Mob.h
++++ b/src/client/Gameplay/MapleMap/Mob.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include "../../Template/Range.h"
+ #include "LivingObject.h"
+ 
+ #include "../Combat/Attack.h"
+@@ -66,6 +67,9 @@ namespace jrc
+         /// Change this mob's control mode:
+         /// 0 - no control, 1 - control, 2 - aggro
+         void set_control(int8_t mode);
++        // Keep a client-controlled mob between these x coordinates (the
++        // server normally enforces the spawn's rx0/rx1 range).
++        void set_patrol_range(Range<int16_t> range);
+         /// Send movement to the mob.
+         void send_movement(Point<int16_t> start, std::vector<Movement>&& movements);
+         /// Kill the mob with the appropriate type:
+@@ -154,6 +158,8 @@ namespace jrc
+         bool canmove;
+         bool canjump;
+         bool canfly;
++        bool haspatrol;
++        Range<int16_t> patrol;
+ 
+         EffectLayer effects;
+         Text namelabel;
+diff --git a/src/client/Gameplay/MapleMap/Obj.cpp b/src/client/Gameplay/MapleMap/Obj.cpp
+index 95581d4..e0844c0 100644
+--- a/src/client/Gameplay/MapleMap/Obj.cpp
++++ b/src/client/Gameplay/MapleMap/Obj.cpp
+@@ -16,26 +16,144 @@
+ // along with this program.  If not, see <http://www.gnu.org/licenses/>.    //
+ //////////////////////////////////////////////////////////////////////////////
+ #include "Obj.h"
++#include "../../Constants.h"
+ #include "nlnx/nx.hpp"
+ 
++#include <cmath>
++
+ namespace jrc
+ {
++    namespace
++    {
++        constexpr int32_t COS_STEPS = 4096;
++        constexpr int32_t COS_SCALE = 65536;
++
++        // cos(2 pi i / 4096) * 65536, rounded to integers once: positions are
++        // then pure integer arithmetic, identical on gcc, clang and wasm
++        // (gameplay must not depend on a libm's last bit).
++        const int32_t* cos_table()
++        {
++            static int32_t table[COS_STEPS];
++            static bool ready = false;
++            if (!ready)
++            {
++                for (int32_t i = 0; i < COS_STEPS; ++i)
++                {
++                    table[i] = static_cast<int32_t>(std::lround(std::cos(2.0 * M_PI * i / COS_STEPS) * COS_SCALE));
++                }
++                ready = true;
++            }
++            return table;
++        }
++
++        int16_t scaled(int32_t amplitude, int32_t c)
++        {
++            int64_t v = static_cast<int64_t>(amplitude) * c;
++            v += v >= 0 ? COS_SCALE / 2 : -(COS_SCALE / 2);
++            return static_cast<int16_t>(v / COS_SCALE);
++        }
++    }
++
+     Obj::Obj(nl::node src)
+     {
+-        animation = Animation(nl::nx::map["Obj"][src["oS"] + ".img"][src["l0"]][src["l1"]][src["l2"]]);
++        nl::node source = nl::nx::map["Obj"][src["oS"] + ".img"][src["l0"]][src["l1"]][src["l2"]];
++        animation = Animation(source);
+         pos = Point<int16_t>(src["x"], src["y"]);
+         flip = src["f"].get_bool();
+         z = src["z"];
++        damage = source["damage"];
++        name = src["oS"].get_string() + "/" + src["l0"].get_string() + "/"
++            + src["l1"].get_string() + "/" + src["l2"].get_string();
++
++        // The move attributes sit on the first frame in the v83 data
++        // (Obj/trap.img/moving/nature/0/0/moveType); accept them on the obj
++        // node too.
++        nl::node mv = source["0"]["moveType"] ? source["0"] : source;
++        move_type = mv["moveType"];
++        move_w = mv["moveW"];
++        move_h = mv["moveH"];
++        move_p = mv["moveP"];
++        if (move_p <= 0)
++        {
++            move_p = 5000;
++        }
++        move_ms = 0;
++    }
++
++    Point<int16_t> Obj::get_anchor() const
++    {
++        return pos;
++    }
++
++    Point<int16_t> Obj::get_offset() const
++    {
++        if (move_type < 1 || move_type > 3)
++        {
++            return {};
++        }
++        const int32_t* table = cos_table();
++        int32_t idx = static_cast<int32_t>((static_cast<int64_t>(move_ms) * COS_STEPS) / move_p) % COS_STEPS;
++        int32_t c = table[idx];
++        int32_t s = table[(idx + 3 * COS_STEPS / 4) % COS_STEPS];  // sin wt = cos(wt - 90 deg)
++        int16_t dx = scaled(move_w, c);
++        int16_t dy = scaled(move_h, move_type == 3 ? s : c);
++        return Point<int16_t>(dx, dy);
++    }
++
++    int32_t Obj::get_move_type() const { return move_type; }
++    int32_t Obj::get_move_w() const { return move_w; }
++    int32_t Obj::get_move_h() const { return move_h; }
++    int32_t Obj::get_move_p() const { return move_p; }
++
++    bool Obj::is_trap() const
++    {
++        return damage > 0;
++    }
++
++    int32_t Obj::get_damage() const
++    {
++        return damage;
++    }
++
++    Point<int16_t> Obj::get_position() const
++    {
++        return pos + get_offset();
++    }
++
++    const std::string& Obj::get_name() const
++    {
++        return name;
++    }
++
++    Rectangle<int16_t> Obj::get_hitbox() const
++    {
++        Rectangle<int16_t> box = animation.get_bounds();
++        if (box.width() == 0 && box.height() == 0)
++        {
++            // No lt/rb on this frame: the trap is not dangerous right now.
++            return {};
++        }
++        if (flip)
++        {
++            box = Rectangle<int16_t>(
++                static_cast<int16_t>(-box.r()), static_cast<int16_t>(-box.l()), box.t(), box.b());
++        }
++        box.shift(get_position());
++        return box;
+     }
+ 
+     void Obj::update()
+     {
+         animation.update();
++        if (move_type > 0)
++        {
++            move_ms = (move_ms + Constants::TIMESTEP) % static_cast<uint32_t>(move_p);
++        }
+     }
+ 
+     void Obj::draw(Point<int16_t> viewpos, float inter) const
+     {
+-        animation.draw(DrawArgument(pos + viewpos, flip), inter);
++        animation.draw(DrawArgument(get_position() + viewpos, flip), inter);
+     }
+ 
+     uint8_t Obj::getz() const
+diff --git a/src/client/Gameplay/MapleMap/Obj.h b/src/client/Gameplay/MapleMap/Obj.h
+index 4c4f2f9..a048064 100644
+--- a/src/client/Gameplay/MapleMap/Obj.h
++++ b/src/client/Gameplay/MapleMap/Obj.h
+@@ -18,6 +18,9 @@
+ #pragma once
+ #include "../../Graphics/Animation.h"
+ #include "../../Template/Point.h"
++#include "../../Template/Rectangle.h"
++
++#include <string>
+ 
+ namespace jrc
+ {
+@@ -34,10 +37,39 @@ namespace jrc
+         // Return depth of the obj.
+         uint8_t getz() const;
+ 
++        // Damage traps (Obj/trap.img: falling stones, steam vents, lava areas)
++        // carry a "damage" value and per-frame lt/rb hit boxes. Frames without
++        // a box, or with an empty one, do not hurt.
++        bool is_trap() const;
++        int32_t get_damage() const;
++        Point<int16_t> get_position() const;
++        const std::string& get_name() const;
++        // Current frame's hit box in map coordinates; empty when inactive.
++        Rectangle<int16_t> get_hitbox() const;
++
++        // Procedural movement from the WZ frame attributes moveType (1/2 =
++        // line, 3 = circle), moveW/moveH (amplitude, px) and moveP (period,
++        // ms; 5000 when absent), as the official client and WzComparerR2
++        // render it: offset = (W cos wt, H cos wt) or (W cos wt, H sin wt).
++        // get_position() includes the offset; get_anchor() is the placement.
++        Point<int16_t> get_anchor() const;
++        Point<int16_t> get_offset() const;
++        int32_t get_move_type() const;
++        int32_t get_move_w() const;
++        int32_t get_move_h() const;
++        int32_t get_move_p() const;
++
+     private:
+         Animation animation;
+         Point<int16_t> pos;
+         uint8_t z;
+         bool flip;
++        int32_t damage;
++        std::string name;
++        int32_t move_type;
++        int32_t move_w;
++        int32_t move_h;
++        int32_t move_p;
++        uint32_t move_ms;
+     };
+ }
+diff --git a/src/client/Gameplay/MapleMap/Portal.h b/src/client/Gameplay/MapleMap/Portal.h
+index 5c73e66..1739b9d 100644
+--- a/src/client/Gameplay/MapleMap/Portal.h
++++ b/src/client/Gameplay/MapleMap/Portal.h
+@@ -62,6 +62,7 @@ namespace jrc
+             std::string name;
+             bool intramap;
+             bool valid;
++            Type type;
+ 
+             bool has_target_map() const
+             {
+@@ -69,7 +70,7 @@ namespace jrc
+             }
+ 
+             WarpInfo(int32_t m, Type portal_type, bool i, std::string tn, std::string n)
+-                : mapid(m), toname(std::move(tn)), name(std::move(n)), intramap(i), valid(false)
++                : mapid(m), toname(std::move(tn)), name(std::move(n)), intramap(i), valid(false), type(portal_type)
+             {
+                 bool scripted = portal_type == SCRIPTED ||
+                     portal_type == SCRIPTED_INVISIBLE ||
+diff --git a/src/client/Gameplay/Physics/FootholdTree.cpp b/src/client/Gameplay/Physics/FootholdTree.cpp
+index 362b456..6f3c51f 100644
+--- a/src/client/Gameplay/Physics/FootholdTree.cpp
++++ b/src/client/Gameplay/Physics/FootholdTree.cpp
+@@ -392,7 +392,17 @@ namespace jrc
+         {
+             const Foothold& fh = footholds.at(iter->second);
+             double ycomp = fh.ground_below(fx);
+-            if (comp >= ycomp && ycomp >= fy)
++            if (ycomp < fy)
++            {
++                continue;
++            }
++            // Adjacent footholds share their endpoint, so two candidates can be
++            // at exactly the same height. Break the tie by id instead of by
++            // container iteration order, which differs between standard
++            // libraries and would make the physics differ between builds.
++            bool closer = ycomp < comp;
++            bool tie = ycomp == comp && ret != 0 && fh.id() < ret;
++            if (closer || tie || ret == 0)
+             {
+                 comp = ycomp;
+                 ret = fh.id();
+diff --git a/src/client/Gameplay/Physics/FootholdTree.h b/src/client/Gameplay/Physics/FootholdTree.h
+index d6f57fc..eeb18a6 100644
+--- a/src/client/Gameplay/Physics/FootholdTree.h
++++ b/src/client/Gameplay/Physics/FootholdTree.h
+@@ -42,6 +42,10 @@ namespace jrc
+         Range<int16_t> get_walls() const;
+         // Returns the topmost and bottommost platform positions of the map.
+         Range<int16_t> get_borders() const;
++        const std::unordered_map<uint16_t, Foothold>& get_footholds() const
++        {
++            return footholds;
++        }
+ 
+     private:
+         uint16_t get_fhid_below(double fx, double fy) const;
+diff --git a/src/client/Gameplay/Spawn.cpp b/src/client/Gameplay/Spawn.cpp
+index 87ce57e..c007dcf 100644
+--- a/src/client/Gameplay/Spawn.cpp
++++ b/src/client/Gameplay/Spawn.cpp
+@@ -42,7 +42,10 @@ namespace jrc
+ 
+ 
+     MobSpawn::MobSpawn(int32_t o, int32_t i, int8_t m, int8_t st, uint16_t f, bool ns, int8_t t, Point<int16_t> p)
+-        : oid(o), id(i), mode(m), stance(st), fh(f), newspawn(ns), team(t), position(p) {}
++        : oid(o), id(i), mode(m), stance(st), fh(f), newspawn(ns), team(t), position(p), haspatrol(false) {}
++
++    MobSpawn::MobSpawn(int32_t o, int32_t i, int8_t m, int8_t st, uint16_t f, bool ns, int8_t t, Point<int16_t> p, Range<int16_t> pr)
++        : oid(o), id(i), mode(m), stance(st), fh(f), newspawn(ns), team(t), position(p), haspatrol(true), patrol(pr) {}
+ 
+     int8_t MobSpawn::get_mode() const
+     {
+@@ -56,7 +59,12 @@ namespace jrc
+ 
+     std::unique_ptr<MapObject> MobSpawn::instantiate() const
+     {
+-        return std::make_unique<Mob>(oid, id, mode, stance, fh, newspawn, team, position);
++        auto mob = std::make_unique<Mob>(oid, id, mode, stance, fh, newspawn, team, position);
++        if (haspatrol)
++        {
++            mob->set_patrol_range(patrol);
++        }
++        return mob;
+     }
+ 
+ 
+diff --git a/src/client/Gameplay/Spawn.h b/src/client/Gameplay/Spawn.h
+index 65ff646..9a14530 100644
+--- a/src/client/Gameplay/Spawn.h
++++ b/src/client/Gameplay/Spawn.h
+@@ -16,6 +16,7 @@
+ // along with this program.  If not, see <http://www.gnu.org/licenses/>.    //
+ //////////////////////////////////////////////////////////////////////////////
+ #pragma once
++#include "../Template/Range.h"
+ #include "MapleMap/MapObject.h"
+ 
+ #include "../Graphics/Animation.h"
+@@ -59,6 +60,17 @@ namespace jrc
+                  bool newspawn,
+                  int8_t team,
+                  Point<int16_t> position);
++        // Same, with the horizontal patrol range from the map's life data so a
++        // client-controlled mob stays on its platform like the server keeps it.
++        MobSpawn(int32_t oid,
++                 int32_t id,
++                 int8_t mode,
++                 int8_t stance,
++                 uint16_t fh,
++                 bool newspawn,
++                 int8_t team,
++                 Point<int16_t> position,
++                 Range<int16_t> patrol);
+ 
+         int8_t get_mode() const;
+         int32_t get_oid() const;
+@@ -73,6 +85,8 @@ namespace jrc
+         bool newspawn;
+         int8_t team;
+         Point<int16_t> position;
++        bool haspatrol;
++        Range<int16_t> patrol;
+     };
+ 
+ 
+diff --git a/src/client/Gameplay/Stage.cpp b/src/client/Gameplay/Stage.cpp
+index fb47f7c..2d3ac01 100644
+--- a/src/client/Gameplay/Stage.cpp
++++ b/src/client/Gameplay/Stage.cpp
+@@ -22,6 +22,7 @@
+ #include "../IO/Messages.h"
+ #include "../Net/Packets/GameplayPackets.h"
+ #include "../Net/Packets/AttackAndSkillPackets.h"
++#include "../Offline/Offline.h"
+ #include "../Util/Misc.h"
+ 
+ #include "nlnx/nx.hpp"
+@@ -155,9 +156,21 @@ namespace jrc
+             return;
+         }
+ 
++        // Offline replay feeds recorded input at the same point in the tick
++        // where the fuzzing harness applies its input byte.
++        if (Offline::enabled())
++        {
++            Offline::tick();
++        }
++
+         combat.update();
+-        backgrounds.update();
+         effect.update();
++#ifndef MS_HEADLESS
++        // Purely visual; the headless fuzzing build skips it (most of the
++        // per-tick cost). Object animations are updated in both builds because
++        // damage traps depend on their current frame.
++        backgrounds.update();
++#endif
+         tilesobjs.update();
+ 
+         reactors.update(physics);
+@@ -177,6 +190,13 @@ namespace jrc
+         update_directional_context();
+ 
+         portals.update(player.get_position());
++        if (Offline::enabled())
++        {
++            // Without a server nothing else applies touch portals, and jump
++            // quests rely on them to send fallen players back to the start.
++            check_touch_portals();
++            Offline::check_goal();
++        }
+         camera.update(player.get_position());
+ 
+         if (player.is_invincible())
+@@ -184,12 +204,28 @@ namespace jrc
+             return;
+         }
+ 
++        if (Offline::enabled())
++        {
++            // Damage traps (falling stones, steam, lava areas) are detected
++            // client-side in the original game. Offline they are lethal; the
++            // online path is left untouched.
++            check_traps();
++            if (player.is_invincible())
++            {
++                return;
++            }
++        }
++
+         if (int32_t oid_id = mobs.find_colliding(player.get_phobj()))
+         {
+             if (MobAttack attack = mobs.create_attack(oid_id))
+             {
+                 MobAttackResult result = player.damage(attack);
+                 TakeDamagePacket(result, TakeDamagePacket::TOUCH).dispatch();
++                if (Offline::enabled())
++                {
++                    Offline::notify_hit(oid_id, result.damage);
++                }
+             }
+         }
+     }
+@@ -245,14 +281,77 @@ namespace jrc
+ 
+         Point<int16_t> playerpos  = player.get_position();
+         Portal::WarpInfo warpinfo = portals.find_warp_at(playerpos);
++        apply_warp(warpinfo);
++    }
++
++    Rectangle<int16_t> Stage::player_sweep_rect()
++    {
++        // Same shape MapMobs::find_colliding uses: last-to-current sweep,
++        // 50 px tall.
++        const PhysicsObject& phobj = player.get_phobj();
++        Range<int16_t> horizontal{ phobj.get_last_x(), phobj.get_x() };
++        Range<int16_t> vertical{ phobj.get_last_y(), phobj.get_y() };
++        return Rectangle<int16_t>{
++            horizontal.smaller(),
++            horizontal.greater(),
++            static_cast<int16_t>(vertical.smaller() - 50),
++            vertical.greater()
++        };
++    }
++
++    void Stage::check_traps()
++    {
++        TrapHit hit = tilesobjs.find_trap(player_sweep_rect());
++        if (!hit)
++        {
++            return;
++        }
++        MobAttack attack(hit.damage, hit.origin, 0, 0);
++        MobAttackResult result = player.damage(attack);
++        Offline::notify_trap(result.damage, hit.obj ? hit.obj->get_name() : std::string("trap"));
++    }
++
++    void Stage::check_touch_portals()
++    {
++        Portal::WarpInfo warpinfo = portals.find_touch_warp_at(player.get_position());
++        apply_warp(warpinfo);
++    }
++
++    void Stage::apply_warp(const Portal::WarpInfo& warpinfo)
++    {
++        if (Offline::enabled() && warpinfo.type == Portal::INVISIBLE
++            && ((!warpinfo.valid && !warpinfo.intramap && Offline::hidden_portals_reset())
++                || Offline::hidden_portals_reset_all()))
++        {
++            // Hidden trap portal (no target, no script): offline it sends the
++            // player back to the spawn, the worst case the real script could do.
++            // With "reset-all" every hidden portal does, so a jump quest has to
++            // be jumped and not teleported through (Henesys pet park).
++            Point<int16_t> spawnpoint = portals.get_portal_by_id(0);
++            Point<int16_t> startpos   = physics.get_y_below(spawnpoint);
++            player.respawn(startpos, mapinfo.is_underwater());
++            Offline::notify_reset(warpinfo);
++            return;
++        }
+         if (warpinfo.intramap)
+         {
+             Point<int16_t> spawnpoint = portals.get_portal_by_name(warpinfo.toname);
+             Point<int16_t> startpos   = physics.get_y_below(spawnpoint);
+             player.respawn(startpos, mapinfo.is_underwater());
++            if (Offline::enabled())
++            {
++                Offline::notify_reset(warpinfo);
++            }
+         }
+         else if (warpinfo.valid)
+         {
++            if (Offline::enabled())
++            {
++                // The server would warp us to another map; offline that is
++                // the end of the run.
++                Offline::notify_exit(warpinfo);
++                return;
++            }
+             ChangeMapPacket(false, -1, warpinfo.name, false).dispatch();
+             if (warpinfo.has_target_map())
+             {
+@@ -481,6 +580,21 @@ namespace jrc
+         return player;
+     }
+ 
++    const Physics& Stage::get_physics() const
++    {
++        return physics;
++    }
++
++    const MapPortals& Stage::get_portals() const
++    {
++        return portals;
++    }
++
++    const MapTilesObjs& Stage::get_tilesobjs() const
++    {
++        return tilesobjs;
++    }
++
+     int32_t Stage::get_mapid() const
+     {
+         return mapid;
+diff --git a/src/client/Gameplay/Stage.h b/src/client/Gameplay/Stage.h
+index 77e5180..c005c66 100644
+--- a/src/client/Gameplay/Stage.h
++++ b/src/client/Gameplay/Stage.h
+@@ -87,6 +87,10 @@ namespace jrc
+         MapDrops& get_drops();
+         // Returns a reference to the Player.
+         Player& get_player();
++        const Physics& get_physics() const;
++        const MapPortals& get_portals() const;
++        const MapInfo& get_map_info() const { return mapinfo; }
++        const MapTilesObjs& get_tilesobjs() const;
+         // Returns the id of the current map.
+         int32_t get_mapid() const;
+         // Return a reference to the attack and buff component.
+@@ -99,6 +103,10 @@ namespace jrc
+         void load_map(int32_t mapid);
+         void respawn(int8_t portalid);
+         void check_portals();
++        void check_touch_portals();
++        void apply_warp(const Portal::WarpInfo& warpinfo);
++        void check_traps();
++        Rectangle<int16_t> player_sweep_rect();
+         void check_seats();
+         void check_ladders(bool up);
+         void handle_held_actions();
+diff --git a/src/client/Journey.cpp b/src/client/Journey.cpp
+index 3d115fb..0e01dbf 100644
+--- a/src/client/Journey.cpp
++++ b/src/client/Journey.cpp
+@@ -30,6 +30,7 @@
+ #include "IO/UI.h"
+ #include "IO/Window.h"
+ #include "Net/Session.h"
++#include "Offline/Offline.h"
+ #include "Util/NxFiles.h"
+ 
+ #include <iostream>
+@@ -64,11 +65,26 @@ namespace jrc
+         loadConfigString("ProxyIP", Setting<ProxyIP>::get());
+         loadConfigString("ProxyPort", Setting<ProxyPort>::get());
+         loadConfigString("AssetsServerProtocol", Setting<AssetsServerProtocol>::get());
++        loadConfigString("OfflineMapId", Setting<OfflineMapId>::get());
++        loadConfigString("OfflinePortal", Setting<OfflinePortal>::get());
++        loadConfigString("OfflineReplay", Setting<OfflineReplay>::get());
++        loadConfigString("OfflineDeathY", Setting<OfflineDeathY>::get());
++        loadConfigString("OfflineTrace", Setting<OfflineTrace>::get());
++        loadConfigString("OfflineHp", Setting<OfflineHp>::get());
++        loadConfigString("OfflineDamagePerHit", Setting<OfflineDamagePerHit>::get());
++        loadConfigString("OfflineLavaLethal", Setting<OfflineLavaLethal>::get());
++        loadConfigString("OfflineGoal", Setting<OfflineGoal>::get());
++        loadConfigString("OfflineHiddenPortals", Setting<OfflineHiddenPortals>::get());
+ #endif
+ 
+-        if (Error error = Session::get().init())
++        // Offline mode never talks to a server, so a failed connection must
++        // not abort startup.
++        if (!Offline::enabled())
+         {
+-            return error;
++            if (Error error = Session::get().init())
++            {
++                return error;
++            }
+         }
+ 
+         if (Error error = NxFiles::init())
+@@ -97,6 +113,11 @@ namespace jrc
+         Stage::get().init();
+         UI::get().init();
+ 
++        if (Offline::enabled())
++        {
++            Offline::spawn(true);
++        }
++
+         return Error::NONE;
+     }
+ 
+@@ -119,7 +140,7 @@ namespace jrc
+ 
+     bool running()
+     {
+-        return Session::get().is_connected()
++        return (Offline::enabled() || Session::get().is_connected())
+             && UI::get().not_quitted()
+             && Window::get().not_closed();
+     }
+diff --git a/src/client/Net/Session.h b/src/client/Net/Session.h
+index f98a87c..e0d7ee2 100644
+--- a/src/client/Net/Session.h
++++ b/src/client/Net/Session.h
+@@ -24,11 +24,14 @@
+ #include "../Template/Singleton.h"
+ 
+ #include "../Journey.h"
++#include "NetConstants.h"
++#ifndef MS_HEADLESS
+ #ifdef JOURNEY_USE_ASIO
+ #include "SocketAsio.h"
+ #else
+ #include "SocketWinsock.h"
+ #endif
++#endif
+ 
+ namespace jrc
+ {
+@@ -61,10 +64,12 @@ namespace jrc
+         size_t pos;
+         bool connected;
+ 
++#ifndef MS_HEADLESS
+ #ifdef JOURNEY_USE_ASIO
+         SocketAsio socket;
+ #else
+         SocketWinsock socket;
++#endif
+ #endif
+     };
+ }
+diff --git a/src/client/Offline/Offline.cpp b/src/client/Offline/Offline.cpp
+new file mode 100644
+index 0000000..87e7b5e
+--- /dev/null
++++ b/src/client/Offline/Offline.cpp
+@@ -0,0 +1,587 @@
++#include "Offline.h"
++
++#include "../Configuration.h"
++#include "../Console.h"
++#include "../Gameplay/Stage.h"
++#include "../IO/KeyAction.h"
++#include "../IO/KeyType.h"
++#include "../IO/UI.h"
++#include "../Gameplay/Spawn.h"
++#include "../Util/Misc.h"
++#include "../Util/Randomizer.h"
++
++#include "nlnx/nx.hpp"
++
++#include <cstdio>
++#include <cstdlib>
++#include <iostream>
++#include <utility>
++
++namespace jrc
++{
++    namespace Offline
++    {
++        namespace
++        {
++            struct KeyBinding
++            {
++                uint8_t bit;
++                KeyAction::Id action;
++            };
++
++            // Order matters for simultaneous transitions: releases are sent
++            // before presses so LEFT->RIGHT never overlaps both directions.
++            constexpr KeyBinding BINDINGS[] =
++            {
++                { KEY_LEFT,  KeyAction::LEFT  },
++                { KEY_RIGHT, KeyAction::RIGHT },
++                { KEY_JUMP,  KeyAction::JUMP  },
++                { KEY_UP,    KeyAction::UP    },
++                { KEY_DOWN,  KeyAction::DOWN  },
++            };
++
++            uint8_t previous_mask = 0;
++
++            std::vector<uint8_t> replay;
++            size_t replay_pos = 0;
++            int32_t replay_tick = 0;
++            bool replay_released = true;
++            int32_t tick_count = 0;
++            bool has_death_y = false;
++            int32_t death_y = 0;
++            bool reported_end = false;
++            bool trace = false;
++
++            PortalHandler on_exit = nullptr;
++            PortalHandler on_reset = nullptr;
++            HitHandler on_hit = nullptr;
++            TrapHandler on_trap = nullptr;
++            DamageHandler on_damage = nullptr;
++
++            int32_t hp = 100;
++            bool lava_lethal = true;
++
++            // Subtract a hit; returns true when it was lethal.
++            bool take_damage(int32_t damage, const std::string& why);
++
++            // Browser-side death (defined below): HP to 0, death animation,
++            // replay frozen.
++            void kill_player(const std::string& why);
++
++            bool hazards = true;
++            std::vector<MobInfo> mobs_spawned;
++            std::vector<MobInfo> npcs;
++            std::string goal;          // "", "portal:<name>", "npc:<id>"
++            bool hidden_reset = true;
++            bool hidden_reset_all = false;
++            bool goal_reached = false;
++
++            // Fixed seed for the shared Randomizer while offline. Mob AI draws
++            // from it every move, so this is what makes replays bit-exact.
++            constexpr uint32_t OFFLINE_SEED = 0x5EED0001;
++
++            void spawn_life()
++            {
++                mobs_spawned.clear();
++                npcs.clear();
++
++                std::string strid  = string_format::extend_id(mapid(), 9);
++                std::string prefix = std::to_string(mapid() / 100000000);
++                nl::node life = nl::nx::map["Map"]["Map" + prefix][strid + ".img"]["life"];
++
++                int32_t oid = 1000;
++                for (nl::node sub : life)
++                {
++                    int32_t id = string_conversion::or_zero<int32_t>(sub["id"].get_string());
++                    if (id == 0)
++                    {
++                        id = sub["id"];
++                    }
++                    if (sub["type"].get_string() == "n")
++                    {
++                        npcs.push_back({ id, sub["x"], sub["cy"] });
++                        continue;
++                    }
++                    if (sub["type"].get_string() != "m" || !hazards)
++                    {
++                        continue;
++                    }
++                    // Like Stage::respawn for the player: start just above the
++                    // ground so a sloped foothold does not count as "below".
++                    Point<int16_t> anchor{ sub["x"], sub["cy"] };
++                    Point<int16_t> position = Stage::get().get_physics().get_y_below(
++                        anchor - Point<int16_t>(0, 20));
++                    uint16_t fh = sub["fh"];
++                    Range<int16_t> patrol{ sub["rx0"], sub["rx1"] };
++
++                    // mode 1: this client controls the mob, so its AI runs here.
++                    Stage::get().get_mobs().spawn(
++                        MobSpawn(oid, id, 1, 0, fh, false, -1, position, patrol));
++                    mobs_spawned.push_back({ id, position.x(), position.y() });
++                    oid++;
++                }
++            }
++        }
++
++        bool enabled()
++        {
++            return !Setting<OfflineMapId>::get().load().empty();
++        }
++
++        int32_t mapid()
++        {
++            return string_conversion::or_default<int32_t>(
++                Setting<OfflineMapId>::get().load(), -1);
++        }
++
++        uint8_t portalid()
++        {
++            return string_conversion::or_zero<uint8_t>(
++                Setting<OfflinePortal>::get().load());
++        }
++
++        CharEntry make_player()
++        {
++            CharEntry entry;
++            entry.cid = 1;
++
++            entry.stats.name = "Fuzzer";
++            entry.stats.exp = 0;
++            entry.stats.mapid = mapid();
++            entry.stats.portal = portalid();
++            entry.stats.rank = { 0, 0 };
++            entry.stats.jobrank = { 0, 0 };
++
++            auto& stats = entry.stats.stats;
++            stats[Maplestat::SKIN] = 0;
++            stats[Maplestat::FACE] = 20000;
++            stats[Maplestat::HAIR] = 30000;
++            stats[Maplestat::LEVEL] = 10;
++            stats[Maplestat::JOB] = 0;
++            stats[Maplestat::STR] = 4;
++            stats[Maplestat::DEX] = 4;
++            stats[Maplestat::INT] = 4;
++            stats[Maplestat::LUK] = 4;
++            int32_t maxhp = string_conversion::or_default<int32_t>(Setting<OfflineHp>::get().load(), 100);
++            if (maxhp < 1) maxhp = 1;
++            stats[Maplestat::HP] = static_cast<uint16_t>(maxhp);
++            stats[Maplestat::MAXHP] = static_cast<uint16_t>(maxhp);
++            stats[Maplestat::MP] = 50;
++            stats[Maplestat::MAXMP] = 50;
++
++            entry.look.female = false;
++            entry.look.skin = 0;
++            entry.look.faceid = 20000;
++            entry.look.hairid = 30000;
++
++            return entry;
++        }
++
++        void set_hazards(bool enabled)
++        {
++            hazards = enabled;
++        }
++
++        const std::vector<MobInfo>& spawned_mobs()
++        {
++            return mobs_spawned;
++        }
++
++        const std::vector<MobInfo>& map_npcs()
++        {
++            return npcs;
++        }
++
++        bool hidden_portals_reset()
++        {
++            return hidden_reset;
++        }
++
++        bool hidden_portals_reset_all()
++        {
++            return hidden_reset_all;
++        }
++
++        void check_goal()
++        {
++            if (goal_reached)
++            {
++                return;
++            }
++            Player& player = Stage::get().get_player();
++            Point<int16_t> pos = player.get_position();
++            if (goal.compare(0, 3, "xy:") == 0)
++            {
++                // "xy:X,Y": standing on the ground next to a map point.
++                std::size_t comma = goal.find(',');
++                if (comma == std::string::npos)
++                {
++                    return;
++                }
++                int32_t gx = string_conversion::or_zero<int32_t>(goal.substr(3, comma - 3));
++                int32_t gy = string_conversion::or_zero<int32_t>(goal.substr(comma + 1));
++                if (player.get_phobj().onground && std::abs(pos.x() - gx) <= 40 && std::abs(pos.y() - gy) <= 30)
++                {
++                    goal_reached = true;
++                    Portal::WarpInfo info(0, Portal::SPAWN, false, "", goal);
++                    info.valid = true;
++                    notify_exit(info);
++                }
++                return;
++            }
++            if (goal.compare(0, 4, "npc:") != 0)
++            {
++                return;
++            }
++            int32_t want = string_conversion::or_zero<int32_t>(goal.substr(4));
++            for (const MobInfo& npc : npcs)
++            {
++                // Standing next to the NPC, close enough to talk to it.
++                if (npc.id == want && player.get_phobj().onground
++                    && std::abs(pos.x() - npc.x) <= 40 && std::abs(pos.y() - npc.y) <= 30)
++                {
++                    goal_reached = true;
++                    Portal::WarpInfo info(0, Portal::SPAWN, false, "", "npc:" + std::to_string(want));
++                    info.valid = true;
++                    notify_exit(info);
++                    return;
++                }
++            }
++        }
++
++        void spawn(bool with_ui)
++        {
++            Randomizer::seed(OFFLINE_SEED);
++
++            Stage& stage = Stage::get();
++            stage.clear();
++            stage.loadplayer(make_player());
++            stage.get_player().recalc_stats(true);
++            hp = stage.get_player().get_stats().get_stat(Maplestat::HP);
++            stage.get_player().get_stats().set_damage_override(
++                string_conversion::or_default<int32_t>(Setting<OfflineDamagePerHit>::get().load(), 1));
++            lava_lethal = Setting<OfflineLavaLethal>::get().load() != "0";
++            goal = Setting<OfflineGoal>::get().load();
++            hidden_reset = Setting<OfflineHiddenPortals>::get().load() != "ignore";
++            hidden_reset_all = Setting<OfflineHiddenPortals>::get().load() == "reset-all";
++            goal_reached = false;
++            stage.load(mapid(), static_cast<int8_t>(portalid()));
++            spawn_life();
++
++            previous_mask = 0;
++
++            std::string encoded = Setting<OfflineReplay>::get().load();
++            if (!encoded.empty())
++            {
++                set_replay(decode_base64(encoded));
++            }
++
++            std::string deathy = Setting<OfflineDeathY>::get().load();
++            has_death_y = !deathy.empty();
++            death_y = string_conversion::or_zero<int32_t>(deathy);
++            trace = Setting<OfflineTrace>::get().load() == "1";
++            tick_count = 0;
++            reported_end = false;
++
++            if (with_ui)
++            {
++                UI& ui = UI::get();
++                ui.change_state(UI::GAME);
++
++                // The key map normally arrives from the server. Install
++                // MapleStory's default action keys so the map is playable by
++                // hand in the browser (key numbers are MapleStory key codes).
++                ui.add_keymapping(56, KeyType::ACTION, KeyAction::JUMP);   // left alt
++                ui.add_keymapping(87, KeyType::ACTION, KeyAction::JUMP);   // right alt
++                ui.add_keymapping(29, KeyType::ACTION, KeyAction::ATTACK); // left ctrl
++                ui.add_keymapping(44, KeyType::ACTION, KeyAction::PICKUP); // z
++                ui.add_keymapping(45, KeyType::ACTION, KeyAction::SIT);    // x
++            }
++        }
++
++        void apply_input(uint8_t mask)
++        {
++            mask &= KEY_MASK;
++            uint8_t changed = static_cast<uint8_t>(previous_mask ^ mask);
++            if (changed == 0)
++            {
++                return;
++            }
++
++            Stage& stage = Stage::get();
++            for (const KeyBinding& binding : BINDINGS)
++            {
++                if ((changed & binding.bit) && !(mask & binding.bit))
++                {
++                    stage.send_key(KeyType::ACTION, binding.action, false);
++                }
++            }
++            for (const KeyBinding& binding : BINDINGS)
++            {
++                if ((changed & binding.bit) && (mask & binding.bit))
++                {
++                    stage.send_key(KeyType::ACTION, binding.action, true);
++                }
++            }
++            previous_mask = mask;
++        }
++
++        void release_all()
++        {
++            apply_input(0);
++        }
++
++        void set_replay(std::vector<uint8_t> bytes)
++        {
++            replay = std::move(bytes);
++            replay_pos = 0;
++            replay_tick = 0;
++            replay_released = replay.empty();
++        }
++
++        bool replay_active()
++        {
++            return replay_pos < replay.size();
++        }
++
++        void tick()
++        {
++            tick_count++;
++
++            // Reseed every tick from the tick number: whatever else draws from
++            // the shared engine (UI in the browser build, nothing in the
++            // harness), mob AI sees the same random sequence in both.
++            Randomizer::seed(OFFLINE_SEED ^ (static_cast<uint32_t>(tick_count) * 2654435761u));
++
++            if (trace)
++            {
++                // Positions at the start of this update, i.e. the result of
++                // update tick_count-1; matches the harness "T tick x y" lines.
++                Player& pl = Stage::get().get_player();
++                Point<int16_t> pos = pl.get_position();
++                char exact[64];
++                std::snprintf(exact, sizeof(exact), "%.17g %.17g", pl.get_phobj().crnt_x(), pl.get_phobj().crnt_y());
++                std::cout << "T " << (tick_count - 1) << " " << pos.x() << " " << pos.y() << " 0 0 " << exact << "\n";
++                int32_t oid = 1000;
++                for (size_t m = 0; m < mobs_spawned.size(); ++m, ++oid)
++                {
++                    Point<int16_t> mpos = Stage::get().get_mobs().get_mob_position(oid);
++                    std::cout << "M " << (tick_count - 1) << " " << oid << " " << mpos.x() << " " << mpos.y() << "\n";
++                }
++            }
++
++            if (replay_pos < replay.size() && has_death_y
++                && Stage::get().get_player().get_position().y() > death_y)
++            {
++                // Same rule as the harness: falling ends the attempt.
++                kill_player("fell into the lava");
++            }
++
++            if (replay_pos >= replay.size())
++            {
++                if (!replay_released)
++                {
++                    release_all();
++                    replay_released = true;
++                }
++                if (!replay.empty() && !reported_end)
++                {
++                    reported_end = true;
++                    Console::get().print("[offline] replay finished at tick " + std::to_string(tick_count));
++                }
++                return;
++            }
++
++            apply_input(replay[replay_pos]);
++            if (++replay_tick >= TICKS_PER_BYTE)
++            {
++                replay_tick = 0;
++                replay_pos++;
++            }
++        }
++
++        int32_t ticks()
++        {
++            return tick_count;
++        }
++
++        void set_on_exit(PortalHandler handler)
++        {
++            on_exit = handler;
++        }
++
++        void set_on_reset(PortalHandler handler)
++        {
++            on_reset = handler;
++        }
++
++        void set_on_hit(HitHandler handler)
++        {
++            on_hit = handler;
++        }
++
++        void set_on_trap(TrapHandler handler)
++        {
++            on_trap = handler;
++        }
++
++        void set_on_damage(DamageHandler handler)
++        {
++            on_damage = handler;
++        }
++
++        int32_t hp_left()
++        {
++            return hp;
++        }
++
++        namespace
++        {
++            bool take_damage(int32_t damage, const std::string& why)
++            {
++                if (damage < 1)
++                {
++                    damage = 1;
++                }
++                hp -= damage;
++                if (hp < 0)
++                {
++                    hp = 0;
++                }
++                Stage::get().get_player().get_stats().set_stat(Maplestat::HP, static_cast<uint16_t>(hp));
++                if (on_damage)
++                {
++                    on_damage(damage, hp, why);
++                }
++                else
++                {
++                    Console::get().print("[offline] " + why + ": -" + std::to_string(damage)
++                        + " HP, " + std::to_string(hp) + " left, tick " + std::to_string(tick_count));
++                }
++                return hp <= 0;
++            }
++        }
++
++        namespace
++        {
++            void kill_player(const std::string& why)
++            {
++                Console::get().print("[offline] " + why + " at tick " + std::to_string(tick_count));
++                Player& player = Stage::get().get_player();
++                player.get_stats().set_stat(Maplestat::HP, 0);
++                player.die();
++                replay_pos = replay.size();
++            }
++        }
++
++        void notify_hit(int32_t mob_oid, int32_t damage)
++        {
++            if (!take_damage(damage, "touched by mob " + std::to_string(mob_oid)))
++            {
++                return;
++            }
++            if (on_hit)
++            {
++                on_hit(mob_oid);
++            }
++            else
++            {
++                kill_player("killed by mob " + std::to_string(mob_oid));
++            }
++        }
++
++        void notify_trap(int32_t damage, const std::string& name)
++        {
++            bool lava = name.find("trap/area") != std::string::npos;
++            if (lava && lava_lethal)
++            {
++                // Falling into the lava fails the jump quest no matter the HP.
++                damage = hp > 0 ? hp : 1;
++            }
++            if (!take_damage(damage, "hit by trap " + name))
++            {
++                return;
++            }
++            if (on_trap)
++            {
++                on_trap(damage, name);
++            }
++            else
++            {
++                kill_player("killed by trap " + name);
++            }
++        }
++
++        void notify_exit(const Portal::WarpInfo& warpinfo)
++        {
++            bool is_goal = goal.empty() || warpinfo.name == goal
++                || (goal.compare(0, 7, "portal:") == 0 && warpinfo.name == goal.substr(7));
++            if (!is_goal)
++            {
++                // Some other map exit (e.g. the way back): the attempt is over.
++                Console::get().print("[offline] left the map through " + warpinfo.name
++                    + " at tick " + std::to_string(tick_count));
++                notify_reset(warpinfo);
++                return;
++            }
++            if (on_exit)
++            {
++                on_exit(warpinfo);
++            }
++            else
++            {
++                Console::get().print("[offline] SOLVED: " + warpinfo.name
++                    + (warpinfo.mapid > 0 ? " -> map " + std::to_string(warpinfo.mapid) : std::string())
++                    + " at tick " + std::to_string(tick_count));
++                // Freeze the replay so the character stays there.
++                replay_pos = replay.size();
++            }
++        }
++
++        void notify_reset(const Portal::WarpInfo& warpinfo)
++        {
++            if (on_reset)
++            {
++                on_reset(warpinfo);
++            }
++            else
++            {
++                Console::get().print("[offline] reset portal: " + warpinfo.name
++                    + " -> " + warpinfo.toname);
++            }
++        }
++
++        std::vector<uint8_t> decode_base64(const std::string& text)
++        {
++            auto value_of = [](char c) -> int
++            {
++                if (c >= 'A' && c <= 'Z') return c - 'A';
++                if (c >= 'a' && c <= 'z') return c - 'a' + 26;
++                if (c >= '0' && c <= '9') return c - '0' + 52;
++                if (c == '+' || c == '-') return 62;
++                if (c == '/' || c == '_') return 63;
++                return -1;
++            };
++
++            std::vector<uint8_t> out;
++            uint32_t buffer = 0;
++            int bits = 0;
++            for (char c : text)
++            {
++                int v = value_of(c);
++                if (v < 0)
++                {
++                    continue;
++                }
++                buffer = (buffer << 6) | static_cast<uint32_t>(v);
++                bits += 6;
++                if (bits >= 8)
++                {
++                    bits -= 8;
++                    out.push_back(static_cast<uint8_t>((buffer >> bits) & 0xFF));
++                }
++            }
++            return out;
++        }
++    }
++}
+diff --git a/src/client/Offline/Offline.h b/src/client/Offline/Offline.h
+new file mode 100644
+index 0000000..4f1dbd2
+--- /dev/null
++++ b/src/client/Offline/Offline.h
+@@ -0,0 +1,104 @@
++#pragma once
++#include "../Gameplay/MapleMap/Portal.h"
++#include "../Net/Login.h"
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace jrc
++{
++    // Offline mode runs the real Stage/Player/Physics code path without a
++    // server: a synthetic character is spawned directly on a map and key
++    // input comes from a byte stream instead of the keyboard. The fuzzing
++    // harness and the browser replay share this module so that an input
++    // found by the fuzzer means exactly the same thing when replayed.
++    namespace Offline
++    {
++        // One input byte is a key mask held for TICKS_PER_BYTE physics ticks.
++        constexpr uint8_t KEY_LEFT  = 0x01;
++        constexpr uint8_t KEY_RIGHT = 0x02;
++        constexpr uint8_t KEY_JUMP  = 0x04;
++        constexpr uint8_t KEY_UP    = 0x08;
++        constexpr uint8_t KEY_DOWN  = 0x10;
++        constexpr uint8_t KEY_MASK  = 0x1F;
++        constexpr int32_t TICKS_PER_BYTE = 4;
++
++        // True when the OfflineMapId setting is non-empty.
++        bool enabled();
++        int32_t mapid();
++        uint8_t portalid();
++
++        // A plain character whose walk and jump forces match an unequipped
++        // v83 character (speed 100, jump 100), with OfflineHp hit points. Every
++        // hit (mob touch, trap) deals OfflineDamagePerHit and grants the
++        // client's usual two seconds of invincibility; the run ends at 0 HP.
++        CharEntry make_player();
++        int32_t hp_left();
++
++        // Map hazards: the mobs listed in the map's "life" node are spawned
++        // client-side with a fixed random seed so their patrols are
++        // reproducible. Off by default only for experiments.
++        void set_hazards(bool enabled);
++        struct MobInfo
++        {
++            int32_t id;
++            int16_t x;
++            int16_t y;
++        };
++        const std::vector<MobInfo>& spawned_mobs();
++        // NPCs from the map's life node (not spawned; used for goals and plots).
++        const std::vector<MobInfo>& map_npcs();
++        // True when invisible target-less portals send the player back to spawn.
++        bool hidden_portals_reset();
++        // OfflineHiddenPortals = "reset-all": every hidden portal, target or
++        // not, sends the player back to the spawn (no teleport shortcuts).
++        bool hidden_portals_reset_all();
++        // Called by Stage after the player moved: checks an "npc:<id>" goal.
++        void check_goal();
++
++        // Mirror of the SetField packet handler without the packet: load the
++        // player, load the map, and optionally switch the UI to the game
++        // state. Also arms the replay if OfflineReplay is set.
++        void spawn(bool with_ui);
++
++        // Feed one key mask. Only transitions relative to the previous mask
++        // are sent, exactly as a keyboard would generate press/release events.
++        void apply_input(uint8_t mask);
++        void release_all();
++
++        // Replay support: bytes are consumed by tick(), one byte per
++        // TICKS_PER_BYTE ticks, then all keys are released. A replay also
++        // stops when the player falls below the OfflineDeathY setting, so the
++        // browser shows the attempt exactly as far as the harness scored it.
++        void set_replay(std::vector<uint8_t> bytes);
++        bool replay_active();
++        void tick();
++        int32_t ticks();
++
++        // Portal events raised by Stage while offline. The harness uses them
++        // as stop triggers; the browser build just logs.
++        using PortalHandler = void (*)(const Portal::WarpInfo& warpinfo);
++        using HitHandler = void (*)(int32_t mob_oid);
++        using TrapHandler = void (*)(int32_t damage, const std::string& name);
++        using DamageHandler = void (*)(int32_t damage, int32_t hp_left, const std::string& why);
++        void set_on_exit(PortalHandler handler);
++        void set_on_reset(PortalHandler handler);
++        // Death handlers: called when a mob touch / trap hit brings HP to 0.
++        void set_on_hit(HitHandler handler);
++        void set_on_trap(TrapHandler handler);
++        // Called for every hit taken, lethal or not.
++        void set_on_damage(DamageHandler handler);
++        // A warp portal to another map was used. It is the solve when it
++        // matches OfflineGoal (or when no goal is set); otherwise leaving the
++        // map ends the attempt like a reset.
++        void notify_exit(const Portal::WarpInfo& warpinfo);
++        void notify_reset(const Portal::WarpInfo& warpinfo);
++        // A mob touched the player for `damage` points.
++        void notify_hit(int32_t mob_oid, int32_t damage);
++        // A damage trap (falling stone, steam vent, lava area) hit the player.
++        void notify_trap(int32_t damage, const std::string& name);
++
++        std::vector<uint8_t> decode_base64(const std::string& text);
++    }
++}
+diff --git a/src/client/Util/Randomizer.h b/src/client/Util/Randomizer.h
+index 7c13972..faab41d 100644
+--- a/src/client/Util/Randomizer.h
++++ b/src/client/Util/Randomizer.h
+@@ -25,6 +25,13 @@ namespace jrc
+     class Randomizer
+     {
+     public:
++        // Reseed the shared engine. Offline mode uses a fixed seed so that mob
++        // movement, and therefore a whole replay, is reproducible.
++        static void seed(uint32_t value)
++        {
++            engine().seed(value);
++        }
++
+         bool next_bool() const
+         {
+             return next_int(2) == 1;
+@@ -52,10 +59,14 @@ namespace jrc
+             if (from >= to)
+                 return from;
+ 
+-            std::uniform_real_distribution<T> range(from, to);
+-            std::random_device rd;
+-            std::default_random_engine engine{ rd() };
+-            return range(engine);
++            // Built from the raw generator output (Mersenne Twister's genrand_res53)
++            // rather than std::uniform_real_distribution, whose algorithm differs
++            // between libstdc++ versions and libc++; offline replays must agree
++            // across the native harness and the browser build.
++            uint32_t a = engine()() >> 5;
++            uint32_t b = engine()() >> 6;
++            double unit = (a * 67108864.0 + b) * (1.0 / 9007199254740992.0);
++            return static_cast<T>(from + (to - from) * unit);
+         }
+ 
+         template <class T>
+@@ -70,10 +81,11 @@ namespace jrc
+             if (from >= to)
+                 return from;
+ 
+-            std::uniform_int_distribution<T> range(from, to - 1);
+-            std::random_device rd;
+-            std::default_random_engine engine{ rd() };
+-            return range(engine);
++            // Modulo mapping of one 32-bit draw. The tiny bias is irrelevant for
++            // game AI; portability of the exact sequence is what matters here.
++            uint64_t span = static_cast<uint64_t>(to) - static_cast<uint64_t>(from);
++            uint32_t draw = engine()();
++            return static_cast<T>(from + static_cast<T>(draw % span));
+         }
+ 
+         template <class E>
+@@ -88,5 +100,12 @@ namespace jrc
+             auto next_underlying = next_int<typename std::underlying_type<E>::type>(from, to);
+             return static_cast<E>(next_underlying);
+         }
++
++    private:
++        static std::mt19937& engine()
++        {
++            static std::mt19937 shared{ std::random_device{}() };
++            return shared;
++        }
+     };
+ }

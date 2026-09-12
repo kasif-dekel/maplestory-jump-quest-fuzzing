@@ -1,0 +1,20 @@
+diff --git a/afl-fuzz.c b/afl-fuzz.c
+index dfd86e8..18859e9 100644
+--- a/afl-fuzz.c
++++ b/afl-fuzz.c
+@@ -2730,6 +2730,15 @@ static void perform_dry_run(char** argv) {
+     close(fd);
+ 
+     res = calibrate_case(argv, q, use_mem, 0, 1);
++
++    /* IJON: let the seeds themselves populate the max map. calibrate_case
++       leaves the last run's maxima in shared memory; without this a resumed
++       campaign only learns its frontier from mutants of the seeds AFL happens
++       to favour (the short ones), and the saved frontier inputs are never
++       fuzzed. */
++    if (res == FAULT_NONE || res == crash_mode)
++      ijon_update_max(ijon_state, shared_data, use_mem, q->len);
++
+     ck_free(use_mem);
+ 
+     if (stop_soon) return;

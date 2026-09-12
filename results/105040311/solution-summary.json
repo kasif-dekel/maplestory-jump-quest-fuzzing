@@ -1,0 +1,9 @@
+{
+  "map": 105040311,
+  "goal": "npc:1063000",
+  "solution_file": "../../solutions/105040311-2026-09-09-1746.bin",
+  "bytes": 3340,
+  "ticks": 13360,
+  "hits": 10,
+  "verdict": "SOLVED tick=12800 portal=npc:1063000 tomap=0"
+}

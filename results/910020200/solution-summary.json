@@ -1,0 +1,9 @@
+{
+  "map": 910020200,
+  "goal": "xy:-181,-4195",
+  "solution_file": "../../solutions/910020200-2026-09-11-0549.bin",
+  "bytes": 1899,
+  "ticks": 7596,
+  "hits": 4,
+  "verdict": "SOLVED tick=7594 portal=xy:-181,-4195 tomap=0"
+}

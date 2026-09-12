@@ -1,0 +1,58 @@
+diff --git a/web/index.html b/web/index.html
+index b6d4aae..4669901 100644
+--- a/web/index.html
++++ b/web/index.html
+@@ -163,7 +163,10 @@
+         };
+ 
+         // Fetch configuration before loading the client
+-        fetch('/web/config.json')
++        // The config file can be chosen per page: index.html?config=/web/config2.json
++        // (index2.html redirects here with the level 2 config).
++        const configUrl = new URLSearchParams(window.location.search).get('config') || '/web/config.json';
++        fetch(configUrl)
+             .then(response => {
+                 if (!response.ok) {
+                     throw new Error(`HTTP error! status: ${response.status}`);
+@@ -178,7 +181,9 @@
+                     const lazyConfigKeys = [
+                         'AssetsServerIP', 'AssetsServerPort',
+                         'MapleStoryServerIp', 'MapleStoryServerPort',
+-                        'ProxyIP', 'ProxyPort', 'AssetsServerProtocol'
++                        'ProxyIP', 'ProxyPort', 'AssetsServerProtocol',
++                        'OfflineMapId', 'OfflinePortal', 'OfflineReplay', 'OfflineDeathY', 'OfflineTrace',
++                        'OfflineHp', 'OfflineDamagePerHit', 'OfflineLavaLethal', 'OfflineGoal', 'OfflineHiddenPortals'
+                     ];
+ 
+                     lazyConfigKeys.forEach(key => {
+@@ -196,7 +201,7 @@
+                 loadWasmClient();
+             })
+             .catch(err => {
+-                console.warn('[config] Could not load /web/config.json, proceeding with defaults. Error:', err.message);
++                console.warn('[config] Could not load', configUrl, ', proceeding with defaults. Error:', err.message);
+                 loadWasmClient();
+             });
+ 
+diff --git a/web/server.py b/web/server.py
+index 225e752..435311b 100644
+--- a/web/server.py
++++ b/web/server.py
+@@ -16,7 +16,7 @@ import http.server
+ import socketserver
+ import os
+ 
+-PORT = 8000
++PORT = int(os.environ.get("PORT", "8000"))
+ # Serve from parent directory (project root) to access assets/
+ DIRECTORY = os.path.join(os.path.dirname(__file__), "..")
+ 
+@@ -113,7 +113,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
+ if __name__ == "__main__":
+     # Allow address reuse to avoid "Address already in use" errors on restart
+     socketserver.TCPServer.allow_reuse_address = True
+-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
++    with http.server.ThreadingHTTPServer(("", PORT), Handler) as httpd:
+         print("=" * 60)
+         print("MapleStory WASM Server with HTTP Range Request Support")
+         print("=" * 60)

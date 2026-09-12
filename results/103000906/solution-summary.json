@@ -1,0 +1,9 @@
+{
+  "map": 103000906,
+  "goal": "(farthest warp portal)",
+  "solution_file": "../../solutions/103000906-2026-09-10-1928.bin",
+  "bytes": 4103,
+  "ticks": 16412,
+  "hits": 24,
+  "verdict": "SOLVED tick=15156 portal=in00 tomap=103000907"
+}

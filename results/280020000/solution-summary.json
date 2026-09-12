@@ -1,0 +1,119 @@
+{
+  "map": 280020000,
+  "map_name": "Adobis's Mission I: Breath of Lava <Level 1>",
+  "solution_file": "../../solutions/280020000-2026-09-08.bin",
+  "input_bytes": 5092,
+  "ticks": 20352,
+  "seconds": 162.816,
+  "exit_portal": "east00",
+  "hits_taken": 13,
+  "hp_left": 87,
+  "hits": [
+    {
+      "tick": 2260,
+      "x": 1074,
+      "y": -288,
+      "hp_left": 99,
+      "by": "touched by mob 1000"
+    },
+    {
+      "tick": 2510,
+      "x": 1263,
+      "y": -252,
+      "hp_left": 98,
+      "by": "touched by mob 1001"
+    },
+    {
+      "tick": 4992,
+      "x": 1709,
+      "y": -389,
+      "hp_left": 97,
+      "by": "hit by trap trap/stone/stoneMR/2"
+    },
+    {
+      "tick": 5878,
+      "x": 1979,
+      "y": -470,
+      "hp_left": 96,
+      "by": "hit by trap trap/stone/stoneMR/1"
+    },
+    {
+      "tick": 6764,
+      "x": 2238,
+      "y": -542,
+      "hp_left": 95,
+      "by": "hit by trap trap/stone/stoneMR/0"
+    },
+    {
+      "tick": 7192,
+      "x": 2337,
+      "y": -470,
+      "hp_left": 94,
+      "by": "hit by trap trap/stone/stoneMR/1"
+    },
+    {
+      "tick": 7503,
+      "x": 2341,
+      "y": -557,
+      "hp_left": 93,
+      "by": "hit by trap trap/stone/stoneMR/1"
+    },
+    {
+      "tick": 8552,
+      "x": 2619,
+      "y": -372,
+      "hp_left": 92,
+      "by": "hit by trap trap/stone/stoneMR/0"
+    },
+    {
+      "tick": 15296,
+      "x": 3781,
+      "y": -342,
+      "hp_left": 91,
+      "by": "touched by mob 1002"
+    },
+    {
+      "tick": 16095,
+      "x": 3843,
+      "y": -331,
+      "hp_left": 90,
+      "by": "touched by mob 1002"
+    },
+    {
+      "tick": 16485,
+      "x": 3778,
+      "y": -324,
+      "hp_left": 89,
+      "by": "touched by mob 1002"
+    },
+    {
+      "tick": 17213,
+      "x": 3801,
+      "y": -273,
+      "hp_left": 88,
+      "by": "touched by mob 1002"
+    },
+    {
+      "tick": 17729,
+      "x": 3877,
+      "y": -273,
+      "hp_left": 87,
+      "by": "touched by mob 1002"
+    }
+  ],
+  "rules": {
+    "hp": 100,
+    "damage_per_hit": 1,
+    "lava": "lethal",
+    "post_hit_invincibility_ms": 2000,
+    "mobs": "map life spawned client-side, patrol range enforced",
+    "traps": "Obj/trap.img hit boxes, per frame"
+  },
+  "encoding": "1 byte = key mask (L=1 R=2 JUMP=4 UP=8 DOWN=16) held for 4 ticks of 8 ms",
+  "feedback": "IJON max: slot = (16 px height band, falling-rock phase of 8), value = x; no credit below the lava top (y > -168)",
+  "checkpoint": {
+    "tick": 17731,
+    "bytes": 4432,
+    "note": "forkserver snapshot taken after replaying this prefix; the last quarter was found in 20 min"
+  }
+}
